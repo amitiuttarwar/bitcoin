@@ -216,8 +216,19 @@ struct Peer {
 
     /** A vector of addresses to send to the peer, limited to MAX_ADDR_TO_SEND. */
     std::vector<CAddress> m_addrs_to_send;
-    /** Probabilistic filter of addresses that this peer already knows.
-     *  Used to avoid relaying addresses to this peer more than once. */
+    /** Bloom filter to track recent addr messages relayed with this peer.
+     *
+     *  We initialize this filter for outbound peers (other than
+     *  block-relay-only connections) or when an inbound peer sends us an
+     *  address related message (ADDR, ADDRV2, GETADDR, SENDADDRV2).
+     *
+     *  We use the presence of this filter to decide whether a peer is eligible
+     *  for trickle relay of addr messages. This avoids relaying to peers that
+     *  are unlikely to forward them, effectively blackholing self
+     *  announcements. Reasons peers might not support addr relay on the link
+     *  include that they connected to us as a block-relay-only peer or they
+     *  are a light client.
+     **/
     std::unique_ptr<CRollingBloomFilter> m_addr_known;
     /** Whether a getaddr request to this peer is outstanding. */
     bool m_getaddr_sent{false};
@@ -722,6 +733,9 @@ static CNodeState *State(NodeId pnode) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     return &it->second;
 }
 
+/**
+ * Whether we have established addr relay with this connection.
+ */
 static bool IsAddrRelayEnabled(const Peer& peer)
 {
     return peer.m_addr_known != nullptr;
@@ -2543,6 +2557,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         UpdatePreferredDownload(pfrom, State(pfrom.GetId()));
         }
 
+        // Self advertisement logic
         if (!pfrom.IsInboundConn() && SetupAddressRelay(pfrom)) {
             // For outbound peers, we try to relay our address (so that other
             // nodes can try to find us more quickly, as we have no guarantee
@@ -2552,8 +2567,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             // empty and no one will know who we are, so these mechanisms are
             // important to help us connect to the network.
             //
-            // We skip this for block-relay-only peers to avoid potentially leaking
-            // information about our block-relay-only connections via address relay.
+            // We skip this for block-relay-only peers. We want to avoid
+            // potentially leaking addr information and we do not want to
+            // indicate to the peer that we will participate in addr relay.
             if (fListen && !m_chainman.ActiveChainstate().IsInitialBlockDownload())
             {
                 CAddress addr = GetLocalAddress(&pfrom.addr, pfrom.GetLocalServices());
