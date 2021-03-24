@@ -241,9 +241,8 @@ struct Peer {
     /** Work queue of items requested by this peer **/
     std::deque<CInv> m_getdata_requests GUARDED_BY(m_getdata_requests_mutex);
 
-    explicit Peer(NodeId id, bool addr_relay)
+    explicit Peer(NodeId id)
         : m_id(id)
-        , m_addr_known{addr_relay ? std::make_unique<CRollingBloomFilter>(5000, 0.001) : nullptr}
     {}
 };
 
@@ -1093,9 +1092,7 @@ void PeerManagerImpl::InitializeNode(CNode *pnode)
         assert(m_txrequest.Count(nodeid) == 0);
     }
     {
-        // Addr relay is disabled for outbound block-relay-only peers to
-        // prevent adversaries from inferring these links from addr traffic.
-        PeerRef peer = std::make_shared<Peer>(nodeid, /* addr_relay = */ !pnode->IsBlockOnlyConn());
+        PeerRef peer = std::make_shared<Peer>(nodeid);
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, std::move(peer));
     }
@@ -2546,7 +2543,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         UpdatePreferredDownload(pfrom, State(pfrom.GetId()));
         }
 
-        if (!pfrom.IsInboundConn() && !pfrom.IsBlockOnlyConn()) {
+        if (!pfrom.IsInboundConn() && SetupAddressRelay(pfrom)) {
             // For outbound peers, we try to relay our address (so that other
             // nodes can try to find us more quickly, as we have no guarantee
             // that an outbound peer is even aware of how to reach us) and do a
@@ -2755,10 +2752,11 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         s >> vAddr;
 
-        if (!RelayAddrsWithPeer(*peer)) {
+        if (!SetupAddressRelay(pfrom)) {
             LogPrint(BCLog::NET, "ignoring %s message from %s peer=%d\n", msg_type, pfrom.ConnectionTypeAsString(), pfrom.GetId());
             return;
         }
+
         if (vAddr.size() > MAX_ADDR_TO_SEND)
         {
             Misbehaving(pfrom.GetId(), 20, strprintf("%s message size = %u", msg_type, vAddr.size()));
@@ -3664,6 +3662,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             return;
         }
         peer->m_getaddr_recvd = true;
+
+        SetupAddressRelay(pfrom);
 
         peer->m_addrs_to_send.clear();
         std::vector<CAddress> vAddr;
