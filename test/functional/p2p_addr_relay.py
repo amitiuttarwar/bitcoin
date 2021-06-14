@@ -65,6 +65,10 @@ class AddrTest(BitcoinTestFramework):
     def run_test(self):
         self.oversized_addr_test()
         self.relay_tests()
+        self.inbound_blackhole_tests()
+
+        # This test populates the addrman, which can impact the node's behavior
+        # in subsequent tests
         self.getaddr_tests()
         self.blocksonly_mode_tests()
 
@@ -157,6 +161,51 @@ class AddrTest(BitcoinTestFramework):
         assert_equal(full_outbound_peer.num_ipv4_received, 2)
         self.log.info('Check that addresses are not relayed to block-relay-only outbound peers')
         assert_equal(block_relay_peer.num_ipv4_received, 0)
+
+        self.nodes[0].disconnect_p2ps()
+
+    def sum_addr_messages(self, msgs_dict):
+        val = 0
+        for msg in ['addr', 'addrv2', 'getaddr', 'sendaddrv2']:
+            if msg in msgs_dict:
+                val += msgs_dict[msg]
+        return val
+
+    def inbound_blackhole_tests(self):
+        self.log.info('Check that we only relay addresses to inbound peers who have previously sent us addr related messages')
+
+        addr_source = self.nodes[0].add_p2p_connection(P2PInterface())
+        receiver_peer = self.nodes[0].add_p2p_connection(AddrReceiver())
+        blackhole_peer = self.nodes[0].add_p2p_connection(AddrReceiver(send_getaddr=False))
+
+        msg = self.setup_addr_msg(2)
+        addr_source.send_and_ping(msg)
+        self.mocktime += 30 * 60
+        self.nodes[0].setmocktime(self.mocktime)
+        receiver_peer.sync_with_ping()
+        blackhole_peer.sync_with_ping()
+
+        peerinfo = self.nodes[0].getpeerinfo()
+
+        # Confirm node received addr-related messages from receiver peer
+        assert self.sum_addr_messages(peerinfo[1]['bytesrecv_per_msg']) > 0
+        # And that peer received addresses
+        assert_equal(receiver_peer.num_ipv4_received, 2)
+
+        # Confirm node has not received addr-related messages from blackhole peer
+        assert self.sum_addr_messages(peerinfo[2]['bytesrecv_per_msg']) == 0
+        # And that peer did not receive addresses
+        assert_equal(blackhole_peer.num_ipv4_received, 0)
+
+        self.log.info("After blackhole peer sends addr message, it becomes eligible for trickle relay")
+        blackhole_peer.send_and_ping(msg_addr())
+        msg = self.setup_addr_msg(2)
+        self.send_addr_msg(addr_source, msg, [receiver_peer, blackhole_peer])
+
+        # Confirm node has now received addr-related messages from blackhole peer
+        assert self.sum_addr_messages(peerinfo[1]['bytesrecv_per_msg']) > 0
+        # And that peer received addresses
+        assert_equal(blackhole_peer.num_ipv4_received, 2)
 
         self.nodes[0].disconnect_p2ps()
 
