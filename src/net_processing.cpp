@@ -1242,6 +1242,7 @@ bool PeerManagerImpl::GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) c
     }
 
     stats.m_ping_wait = ping_wait;
+    stats.addr_relay_enabled = IsAddrRelayEnabled(*peer);
 
     return true;
 }
